@@ -103,7 +103,7 @@ for (caminho_ad in caminhos_ad) {
   uso_clipado <- tryCatch({
     res <- st_intersection(uso_solo, st_union(ad)) %>%
       st_zm(drop = TRUE, what = "ZM")
-    res <- res[st_geometry_type(res) %in% c("POLYGON", "MULTIPOLYGON"), ]
+    res <- st_collection_extract(res, type = "POLYGON")  # <-- correção
     st_cast(res, "MULTIPOLYGON")
   }, error = function(e) {
     cat("  AVISO: Erro no clip de", nome_ad, "—", conditionMessage(e), "\n")
@@ -133,7 +133,6 @@ for (caminho_ad in caminhos_ad) {
   resultados_lista[[nome_ad]] <- resumo
   cat("  Feições clipadas:", nrow(uso_clipado), "\n\n")
 }
-
 # -----------------------------------------------------------------------------
 # 6. COMPILAÇÃO DOS DADOS
 # -----------------------------------------------------------------------------
