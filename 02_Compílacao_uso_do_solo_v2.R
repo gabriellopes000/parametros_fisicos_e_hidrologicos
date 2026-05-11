@@ -377,6 +377,199 @@ for (j in seq_along(nomes_ad)) {
 # --- Congelar painéis na linha de dados e coluna Classe ----------------------
 freezePane(wb, ws, firstActiveRow = linha_dados_ini, firstActiveCol = 2)
 
+# -----------------------------------------------------------------------------
+# 8. ABA DE VERIFICAÇÃO: Área Total da AD vs. Soma das Tipologias
+# -----------------------------------------------------------------------------
+cat("=== PASSO 8: Gerando aba de verificação ===\n")
+
+addWorksheet(wb, "Verificação")
+ws_ver <- "Verificação"
+
+# --- Estilos específicos da aba de verificação --------------------------------
+st_ver_titulo <- createStyle(
+  fontSize = 13, fontColour = "#FFFFFF", fontName = "Arial",
+  fgFill = "#1F4E79", halign = "center", valign = "center",
+  textDecoration = "bold"
+)
+st_ver_subtitulo <- createStyle(
+  fontSize = 9, fontColour = "#595959", fontName = "Arial",
+  halign = "left", valign = "center", textDecoration = "italic"
+)
+st_ver_cab <- createStyle(
+  fontSize = 10, fontColour = "#FFFFFF", fontName = "Arial",
+  fgFill = "#2E75B6", halign = "center", valign = "center",
+  textDecoration = "bold", wrapText = TRUE,
+  border = "TopBottomLeftRight", borderColour = "#FFFFFF"
+)
+st_ver_ad <- createStyle(
+  fontSize = 9, fontName = "Arial", halign = "left", valign = "center",
+  fgFill = "#DEEAF1", textDecoration = "bold",
+  border = "TopBottomLeftRight", borderColour = "#BDD7EE"
+)
+st_ver_ad_impar <- createStyle(
+  fontSize = 9, fontName = "Arial", halign = "left", valign = "center",
+  fgFill = "#FFFFFF", textDecoration = "bold",
+  border = "TopBottomLeftRight", borderColour = "#BDD7EE"
+)
+st_ver_num_par <- createStyle(
+  fontSize = 9, fontName = "Arial", halign = "right", valign = "center",
+  fgFill = "#DEEAF1",
+  border = "TopBottomLeftRight", borderColour = "#BDD7EE",
+  numFmt = "#,##0.00"
+)
+st_ver_num_impar <- createStyle(
+  fontSize = 9, fontName = "Arial", halign = "right", valign = "center",
+  fgFill = "#FFFFFF",
+  border = "TopBottomLeftRight", borderColour = "#BDD7EE",
+  numFmt = "#,##0.00"
+)
+st_ver_dif_ok_par <- createStyle(
+  fontSize = 9, fontName = "Arial", halign = "right", valign = "center",
+  fgFill = "#E2EFDA", fontColour = "#375623",  # verde claro
+  border = "TopBottomLeftRight", borderColour = "#BDD7EE",
+  numFmt = "#,##0.00"
+)
+st_ver_dif_ok_impar <- createStyle(
+  fontSize = 9, fontName = "Arial", halign = "right", valign = "center",
+  fgFill = "#F0F7EC", fontColour = "#375623",
+  border = "TopBottomLeftRight", borderColour = "#BDD7EE",
+  numFmt = "#,##0.00"
+)
+st_ver_nota <- createStyle(
+  fontSize = 9, fontColour = "#595959", fontName = "Arial",
+  halign = "left", valign = "center", textDecoration = "italic"
+)
+
+# --- Calcular área total de cada AD diretamente do shapefile -----------------
+areas_ad_totais <- data.frame(
+  AD      = character(),
+  Total_m2 = numeric(),
+  Total_ha = numeric(),
+  Total_km2 = numeric(),
+  stringsAsFactors = FALSE
+)
+
+for (caminho_ad in caminhos_ad) {
+  nome_ad <- tools::file_path_sans_ext(basename(caminho_ad))
+  ad_sf   <- st_read(caminho_ad, quiet = TRUE) %>% st_zm(drop = TRUE, what = "ZM")
+  
+  # Reprojetar para o CRS do uso do solo (garantia de unidade em metros)
+  if (st_crs(ad_sf) != st_crs(uso_solo)) {
+    ad_sf <- st_transform(ad_sf, st_crs(uso_solo))
+  }
+  
+  area_total_m2 <- as.numeric(sum(st_area(ad_sf)))
+  
+  areas_ad_totais <- rbind(areas_ad_totais, data.frame(
+    AD        = nome_ad,
+    Total_m2  = area_total_m2,
+    Total_ha  = area_total_m2 / 10000,
+    Total_km2 = area_total_m2 / 1e6,
+    stringsAsFactors = FALSE
+  ))
+}
+
+# --- Calcular soma das tipologias por AD -------------------------------------
+soma_tipologias <- dados_todos %>%
+  group_by(AD) %>%
+  summarise(
+    Soma_m2  = sum(AD_m2,  na.rm = TRUE),
+    Soma_ha  = sum(AD_ha,  na.rm = TRUE),
+    Soma_km2 = sum(AD_km2, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(AD = as.character(AD))
+
+# --- Unir e calcular diferença -----------------------------------------------
+tabela_ver <- areas_ad_totais %>%
+  left_join(soma_tipologias, by = "AD") %>%
+  mutate(
+    Dif_m2  = Soma_m2  - Total_m2,
+    Dif_ha  = Soma_ha  - Total_ha,
+    Dif_km2 = Soma_km2 - Total_km2
+  )
+
+# --- Escrever na aba ----------------------------------------------------------
+# Linhas: 1 = título, 2 = subtítulo, 3 = cabeçalho, 4+ = dados, última = nota
+
+lin_ver_titulo    <- 1
+lin_ver_subtitulo <- 2
+lin_ver_cab       <- 3
+lin_ver_dados_ini <- 4
+lin_ver_dados_fim <- lin_ver_dados_ini + nrow(tabela_ver) - 1
+lin_ver_nota      <- lin_ver_dados_fim + 2
+
+n_cols_ver <- 7  # AD | Total_m2 | Total_ha | Total_km2 | Soma_ha | Soma_km2 | Dif_km2
+
+# Título
+mergeCells(wb, ws_ver, rows = lin_ver_titulo, cols = 1:n_cols_ver)
+writeData(wb, ws_ver, "VERIFICAÇÃO: ÁREA TOTAL DA AD vs. SOMA DAS TIPOLOGIAS",
+          startRow = lin_ver_titulo, startCol = 1)
+addStyle(wb, ws_ver, st_ver_titulo,
+         rows = lin_ver_titulo, cols = 1:n_cols_ver, gridExpand = TRUE)
+setRowHeights(wb, ws_ver, lin_ver_titulo, 22)
+
+# Subtítulo
+mergeCells(wb, ws_ver, rows = lin_ver_subtitulo, cols = 1:n_cols_ver)
+writeData(wb, ws_ver,
+          "Diferenças próximas a zero são esperadas e resultam de efeitos de borda no clip vetorial.",
+          startRow = lin_ver_subtitulo, startCol = 1)
+addStyle(wb, ws_ver, st_ver_subtitulo,
+         rows = lin_ver_subtitulo, cols = 1:n_cols_ver, gridExpand = TRUE)
+setRowHeights(wb, ws_ver, lin_ver_subtitulo, 16)
+
+# Cabeçalho
+cabecalhos_ver <- c(
+  "Área de Drenagem",
+  "AD Total (m²)", "AD Total (ha)", "AD Total (km²)",
+  "Soma Tipologias (ha)", "Soma Tipologias (km²)",
+  "Diferença (km²)"
+)
+for (k in seq_along(cabecalhos_ver)) {
+  writeData(wb, ws_ver, cabecalhos_ver[k], startRow = lin_ver_cab, startCol = k)
+  addStyle(wb, ws_ver, st_ver_cab, rows = lin_ver_cab, cols = k)
+}
+setRowHeights(wb, ws_ver, lin_ver_cab, 28)
+
+# Dados
+for (i in seq_len(nrow(tabela_ver))) {
+  linha_i <- lin_ver_dados_ini + i - 1
+  eh_par  <- (i %% 2 == 0)
+  
+  st_ad  <- if (eh_par) st_ver_ad       else st_ver_ad_impar
+  st_num <- if (eh_par) st_ver_num_par  else st_ver_num_impar
+  st_dif <- if (eh_par) st_ver_dif_ok_par else st_ver_dif_ok_impar
+  
+  writeData(wb, ws_ver, tabela_ver$AD[i],        startRow = linha_i, startCol = 1)
+  writeData(wb, ws_ver, tabela_ver$Total_m2[i],  startRow = linha_i, startCol = 2)
+  writeData(wb, ws_ver, tabela_ver$Total_ha[i],  startRow = linha_i, startCol = 3)
+  writeData(wb, ws_ver, tabela_ver$Total_km2[i], startRow = linha_i, startCol = 4)
+  writeData(wb, ws_ver, tabela_ver$Soma_ha[i],   startRow = linha_i, startCol = 5)
+  writeData(wb, ws_ver, tabela_ver$Soma_km2[i],  startRow = linha_i, startCol = 6)
+  writeData(wb, ws_ver, tabela_ver$Dif_km2[i],   startRow = linha_i, startCol = 7)
+  
+  addStyle(wb, ws_ver, st_ad,  rows = linha_i, cols = 1)
+  addStyle(wb, ws_ver, st_num, rows = linha_i, cols = 2:6, gridExpand = TRUE)
+  addStyle(wb, ws_ver, st_dif, rows = linha_i, cols = 7)
+  
+  setRowHeights(wb, ws_ver, linha_i, 16)
+}
+
+# Nota de rodapé
+mergeCells(wb, ws_ver, rows = lin_ver_nota, cols = 1:n_cols_ver)
+writeData(wb, ws_ver,
+          "Nota: A diferença pode ser não nula devido a polígonos de uso do solo que não cobrem integralmente a AD, sliver polygons ou imprecisões topológicas entre camadas.",
+          startRow = lin_ver_nota, startCol = 1)
+addStyle(wb, ws_ver, st_ver_nota,
+         rows = lin_ver_nota, cols = 1:n_cols_ver, gridExpand = TRUE)
+setRowHeights(wb, ws_ver, lin_ver_nota, 20)
+
+# Larguras de coluna
+setColWidths(wb, ws_ver, cols = 1, widths = 35)
+setColWidths(wb, ws_ver, cols = 2:7, widths = 20)
+
+cat("Aba de verificação gerada.\n\n")
+
 # --- Salvar ------------------------------------------------------------------
 caminho_xlsx <- file.path(pasta_saida, "tabela_uso_solo_por_AD.xlsx")
 saveWorkbook(wb, caminho_xlsx, overwrite = TRUE)
