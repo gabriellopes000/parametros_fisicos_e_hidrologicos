@@ -2,6 +2,46 @@
 # SCRIPT: Clip de Uso do Solo por Áreas de Drenagem e Compilação de Áreas
 # =============================================================================
 
+# -----------------------------------------------------------------------------
+# 0. PARÂMETROS DE CN / COEFICIENTE DE RUNOFF
+# -----------------------------------------------------------------------------
+
+# Escolha o método: "CN" ou "C"
+metodo_runoff <- "C"
+
+# Valores de CN por tipologia
+valores_CN <- c(
+  "Área industrial"            = 85,
+  "Cava"                       = 90,
+  "Enrocamento"                = 75,
+  "Solo Exposto"               = 91,
+  "Vegetação de Baixo Porte"   = 74,
+  "Vegetação de Grande Porte"  = 55,
+  "Vegetação de Médio Porte"   = 65
+)
+
+# Valores de C (coeficiente de Runoff) por tipologia
+valores_C <- c(
+  "Área industrial"            = 0.38,
+  "Cava"                       = 0.65,
+  "Enrocamento"                = 0.40,
+  "Solo Exposto"               = 0.53,
+  "Vegetação de Baixo Porte"   = 0.40,
+  "Vegetação de Grande Porte"  = 0.13,
+  "Vegetação de Médio Porte"   = 0.38
+)
+
+# Seleciona a lista ativa com base no método escolhido
+valores_runoff <- switch(metodo_runoff,
+                         "CN" = valores_CN,
+                         "C"  = valores_C,
+                         stop("ERRO: 'metodo_runoff' deve ser \"CN\" ou \"C\".")
+)
+
+# -----------------------------------------------------------------------------
+# 1. INSTALAÇÃO DOS PACOTES
+# -----------------------------------------------------------------------------
+
 library(sf)
 library(dplyr)
 library(tidyr)
@@ -9,7 +49,7 @@ library(tcltk)
 library(openxlsx)
 
 # -----------------------------------------------------------------------------
-# 1. SELEÇÃO DO SHAPEFILE DE USO DO SOLO GERAL
+# 2. SELEÇÃO DO SHAPEFILE DE USO DO SOLO GERAL
 # -----------------------------------------------------------------------------
 cat("=== PASSO 1: Selecione o shapefile de Uso do Solo geral ===\n")
 
@@ -33,7 +73,7 @@ cat("Coluna 'Classe' encontrada.\n")
 cat("Classes:", paste(unique(uso_solo_raw$Classe), collapse = ", "), "\n\n")
 
 # -----------------------------------------------------------------------------
-# 2. DISSOLVE POR CLASSE
+# 3. DISSOLVE POR CLASSE
 # -----------------------------------------------------------------------------
 cat("=== PASSO 2: Dissolve por classe ===\n")
 
@@ -57,7 +97,7 @@ if (nrow(classes_duplas) > 0) {
 }
 
 # -----------------------------------------------------------------------------
-# 3. SELEÇÃO DOS SHAPEFILES DE ÁREAS DE DRENAGEM
+# 4. SELEÇÃO DOS SHAPEFILES DE ÁREAS DE DRENAGEM
 # -----------------------------------------------------------------------------
 cat("=== PASSO 3: Selecione os shapefiles de Áreas de Drenagem ===\n")
 
@@ -73,7 +113,7 @@ cat("Áreas de Drenagem selecionadas:", length(caminhos_ad), "\n")
 cat(paste("-", basename(caminhos_ad), collapse = "\n"), "\n\n")
 
 # -----------------------------------------------------------------------------
-# 4. SELEÇÃO DA PASTA DE SAÍDA
+# 5. SELEÇÃO DA PASTA DE SAÍDA
 # -----------------------------------------------------------------------------
 cat("=== PASSO 4: Selecione a pasta de saída ===\n")
 
@@ -82,7 +122,7 @@ if (is.na(pasta_saida) || pasta_saida == "") stop("Nenhuma pasta de saída selec
 cat("Pasta de saída:", pasta_saida, "\n\n")
 
 # -----------------------------------------------------------------------------
-# 5. PROCESSAMENTO: CLIP + CÁLCULO DE ÁREAS + SALVAMENTO
+# 6. PROCESSAMENTO: CLIP + CÁLCULO DE ÁREAS + SALVAMENTO
 # -----------------------------------------------------------------------------
 cat("=== PASSO 5: Processando cada Área de Drenagem ===\n\n")
 
@@ -133,8 +173,9 @@ for (caminho_ad in caminhos_ad) {
   resultados_lista[[nome_ad]] <- resumo
   cat("  Feições clipadas:", nrow(uso_clipado), "\n\n")
 }
+
 # -----------------------------------------------------------------------------
-# 6. COMPILAÇÃO DOS DADOS
+# 7. COMPILAÇÃO DOS DADOS
 # -----------------------------------------------------------------------------
 cat("=== PASSO 6: Compilando tabela final ===\n\n")
 
@@ -147,17 +188,90 @@ dados_todos <- bind_rows(resultados_lista) %>%
 classes_unicas <- sort(unique(as.character(dados_todos$Classe)))
 n_ad           <- length(nomes_ad)
 
+lista_por_ad <- setNames(
+  lapply(nomes_ad, function(ad) {
+    df <- dados_todos %>%
+      filter(AD == ad) %>%
+      group_by(Classe) %>%
+      summarise(
+        AD_m2  = sum(AD_m2,  na.rm = TRUE),
+        AD_ha  = sum(AD_ha,  na.rm = TRUE),
+        AD_km2 = sum(AD_km2, na.rm = TRUE),
+        .groups = "drop"
+      )
+    
+    # Garante todas as classes, preenchendo ausentes com zero
+    classes_faltantes <- setdiff(classes_unicas, df$Classe)
+    
+    if (length(classes_faltantes) > 0) {
+      df_zeros <- data.frame(
+        Classe = classes_faltantes,
+        AD_m2  = 0,
+        AD_ha  = 0,
+        AD_km2 = 0,
+        stringsAsFactors = FALSE
+      )
+      df <- bind_rows(df, df_zeros)
+    }
+    
+    df %>% arrange(match(Classe, classes_unicas))
+  }),
+  nomes_ad
+)
+
+teste <- as.data.frame(lista_por_ad[["AD_TR-01_v2"]])
+
 # -----------------------------------------------------------------------------
-# 7. EXPORTAÇÃO EXCEL FORMATADO
+# PASSO 8: Ponderação de CN / C por AD
+# -----------------------------------------------------------------------------
+cat("=== PASSO 8: Ponderando", metodo_runoff, "por Área de Drenagem ===\n\n")
+
+# Verificar se todas as tipologias presentes têm valor definido
+classes_sem_valor <- setdiff(classes_unicas, names(valores_runoff))
+
+if (length(classes_sem_valor) > 0) {
+  stop(
+    "ERRO: As seguintes tipologias não possuem valor de ", metodo_runoff,
+    " definido em 'valores_runoff':\n",
+    paste(" -", classes_sem_valor, collapse = "\n")
+  )
+}
+
+# Ponderar por AD
+runoff_por_ad <- setNames(
+  lapply(nomes_ad, function(ad) {
+    
+    df <- lista_por_ad[[ad]] %>%
+      mutate(
+        Valor_runoff   = valores_runoff[Classe],
+        Area_total_m2  = sum(AD_m2),
+        Perc_area      = ifelse(Area_total_m2 > 0, AD_m2 / Area_total_m2, 0),
+        Contribuicao   = Valor_runoff * Perc_area
+      )
+    
+    valor_ponderado <- sum(df$Contribuicao, na.rm = TRUE)
+    
+    cat(sprintf("  %-30s %s ponderado = %.2f\n", ad, metodo_runoff, valor_ponderado))
+    
+    list(
+      tabela          = df,
+      valor_ponderado = valor_ponderado
+    )
+  }),
+  nomes_ad
+)
+cat("\n")
+
+teste <- as.data.frame(runoff_por_ad[["AD_TR-01_v2"]])
+
+# -----------------------------------------------------------------------------
+# 9. EXPORTAÇÃO EXCEL FORMATADO — UMA ABA POR AD
 # -----------------------------------------------------------------------------
 cat("=== PASSO 7: Gerando Excel formatado ===\n")
 
 wb <- createWorkbook()
-addWorksheet(wb, "Uso do Solo por AD")
-ws <- "Uso do Solo por AD"
 
-# --- Estilos ------------------------------------------------------------------
-
+# --- Estilos comuns -----------------------------------------------------------
 st_titulo <- createStyle(
   fontSize = 13, fontColour = "#FFFFFF", fontName = "Arial",
   fgFill = "#1F4E79", halign = "center", valign = "center",
@@ -167,16 +281,10 @@ st_subtitulo <- createStyle(
   fontSize = 9, fontColour = "#595959", fontName = "Arial",
   halign = "left", valign = "center", textDecoration = "italic"
 )
-st_cab_ad <- createStyle(
+st_cab <- createStyle(
   fontSize = 10, fontColour = "#FFFFFF", fontName = "Arial",
   fgFill = "#2E75B6", halign = "center", valign = "center",
   textDecoration = "bold", wrapText = TRUE,
-  border = "TopBottomLeftRight", borderColour = "#FFFFFF"
-)
-st_cab_sub <- createStyle(
-  fontSize = 9, fontColour = "#FFFFFF", fontName = "Arial",
-  fgFill = "#5B9BD5", halign = "center", valign = "center",
-  textDecoration = "bold",
   border = "TopBottomLeftRight", borderColour = "#FFFFFF"
 )
 st_cab_classe <- createStyle(
@@ -184,18 +292,6 @@ st_cab_classe <- createStyle(
   fgFill = "#1F4E79", halign = "center", valign = "center",
   textDecoration = "bold",
   border = "TopBottomLeftRight", borderColour = "#FFFFFF"
-)
-st_dado_par <- createStyle(
-  fontSize = 9, fontName = "Arial", halign = "right", valign = "center",
-  fgFill = "#DEEAF1",
-  border = "TopBottomLeftRight", borderColour = "#BDD7EE",
-  numFmt = "#,##0.00"
-)
-st_dado_impar <- createStyle(
-  fontSize = 9, fontName = "Arial", halign = "right", valign = "center",
-  fgFill = "#FFFFFF",
-  border = "TopBottomLeftRight", borderColour = "#BDD7EE",
-  numFmt = "#,##0.00"
 )
 st_classe_par <- createStyle(
   fontSize = 9, fontName = "Arial", halign = "left", valign = "center",
@@ -207,371 +303,225 @@ st_classe_impar <- createStyle(
   fgFill = "#FFFFFF", textDecoration = "bold",
   border = "TopBottomLeftRight", borderColour = "#BDD7EE"
 )
+st_num_par <- createStyle(
+  fontSize = 9, fontName = "Arial", halign = "right", valign = "center",
+  fgFill = "#DEEAF1",
+  border = "TopBottomLeftRight", borderColour = "#BDD7EE",
+  numFmt = "#,##0.00"
+)
+st_num_impar <- createStyle(
+  fontSize = 9, fontName = "Arial", halign = "right", valign = "center",
+  fgFill = "#FFFFFF",
+  border = "TopBottomLeftRight", borderColour = "#BDD7EE",
+  numFmt = "#,##0.00"
+)
+st_pct_par <- createStyle(
+  fontSize = 9, fontName = "Arial", halign = "right", valign = "center",
+  fgFill = "#DEEAF1",
+  border = "TopBottomLeftRight", borderColour = "#BDD7EE",
+  numFmt = "0.00%"
+)
+st_pct_impar <- createStyle(
+  fontSize = 9, fontName = "Arial", halign = "right", valign = "center",
+  fgFill = "#FFFFFF",
+  border = "TopBottomLeftRight", borderColour = "#BDD7EE",
+  numFmt = "0.00%"
+)
+st_runoff_par <- createStyle(
+  fontSize = 9, fontName = "Arial", halign = "right", valign = "center",
+  fgFill = "#FFF2CC", fontColour = "#7F6000",
+  border = "TopBottomLeftRight", borderColour = "#BDD7EE",
+  numFmt = "#,##0.00"
+)
+st_runoff_impar <- createStyle(
+  fontSize = 9, fontName = "Arial", halign = "right", valign = "center",
+  fgFill = "#FFFCE8", fontColour = "#7F6000",
+  border = "TopBottomLeftRight", borderColour = "#BDD7EE",
+  numFmt = "#,##0.00"
+)
 st_total_label <- createStyle(
   fontSize = 10, fontName = "Arial", halign = "left", valign = "center",
   fgFill = "#1F4E79", fontColour = "#FFFFFF", textDecoration = "bold",
   border = "TopBottomLeftRight", borderColour = "#FFFFFF"
 )
-st_total_val <- createStyle(
+st_total_num <- createStyle(
   fontSize = 10, fontName = "Arial", halign = "right", valign = "center",
   fgFill = "#2E75B6", fontColour = "#FFFFFF", textDecoration = "bold",
   border = "TopBottomLeftRight", borderColour = "#FFFFFF",
   numFmt = "#,##0.00"
 )
-st_dado_m2_par <- createStyle(
-  fontSize = 9, fontName = "Arial", halign = "right", valign = "center",
-  fgFill = "#DEEAF1",
-  border = "TopBottomLeftRight", borderColour = "#BDD7EE",
-  numFmt = "#,##0.00"
-)
-st_dado_m2_impar <- createStyle(
-  fontSize = 9, fontName = "Arial", halign = "right", valign = "center",
-  fgFill = "#FFFFFF",
-  border = "TopBottomLeftRight", borderColour = "#BDD7EE",
-  numFmt = "#,##0.00"
-)
-st_total_m2 <- createStyle(
+st_total_pct <- createStyle(
   fontSize = 10, fontName = "Arial", halign = "right", valign = "center",
   fgFill = "#2E75B6", fontColour = "#FFFFFF", textDecoration = "bold",
   border = "TopBottomLeftRight", borderColour = "#FFFFFF",
+  numFmt = "0.00%"
+)
+st_total_runoff <- createStyle(
+  fontSize = 10, fontName = "Arial", halign = "right", valign = "center",
+  fgFill = "#BF9000", fontColour = "#FFFFFF", textDecoration = "bold",
+  border = "TopBottomLeftRight", borderColour = "#FFFFFF",
   numFmt = "#,##0.00"
+)
+st_rodape <- createStyle(
+  fontSize = 9, fontColour = "#595959", fontName = "Arial",
+  halign = "left", valign = "center", textDecoration = "italic"
 )
 
-# --- Layout de linhas e colunas -----------------------------------------------
-# Linha 1: Título
-# Linha 2: Subtítulo
-# Linha 3: Cabeçalho AD (mesclado a cada 3 colunas)
-# Linha 4: Sub-cabeçalho (m², ha, km²)
-# Linhas 5 ... 5+n_classes-1: Dados
-# Última linha: Totais
+# --- Layout fixo de colunas por aba ------------------------------------------
+# Col 1: Classe
+# Col 2: Área (m²)
+# Col 3: Área (ha)
+# Col 4: Área (km²)
+# Col 5: % da AD
+# Col 6: Valor CN ou C
+# Col 7: Contribuição ponderada
+
+COL_CLASSE <- 1
+COL_M2     <- 2
+COL_HA     <- 3
+COL_KM2    <- 4
+COL_PCT    <- 5
+COL_RUNOFF <- 6
+COL_CONTRIB <- 7
+N_COLS     <- 7
 
 linha_titulo    <- 1
 linha_subtitulo <- 2
-linha_cab_ad    <- 3
-linha_cab_sub   <- 4
-linha_dados_ini <- 5
-linha_dados_fim <- linha_dados_ini + length(classes_unicas) - 1
-linha_total     <- linha_dados_fim + 1
+linha_cab       <- 3
+linha_dados_ini <- 4
 
-col_classe  <- 1                          # coluna A = Classe
-col_ad_ini  <- function(i) 2 + (i - 1) * 3   # cada AD ocupa 3 colunas: m², ha, km²
-col_ad_m2   <- function(i) col_ad_ini(i)
-col_ad_ha   <- function(i) col_ad_ini(i) + 1
-col_ad_km2  <- function(i) col_ad_ini(i) + 2
-col_fim     <- col_ad_km2(n_ad)
-
-# --- Título e subtítulo -------------------------------------------------------
-mergeCells(wb, ws, rows = linha_titulo, cols = col_classe:col_fim)
-writeData(wb, ws, "TABELA DE USO DO SOLO POR ÁREA DE DRENAGEM",
-          startRow = linha_titulo, startCol = col_classe)
-addStyle(wb, ws, st_titulo, rows = linha_titulo, cols = col_classe:col_fim, gridExpand = TRUE)
-setRowHeights(wb, ws, linha_titulo, 22)
-
-mergeCells(wb, ws, rows = linha_subtitulo, cols = col_classe:col_fim)
-writeData(wb, ws, "Áreas calculadas a partir de clip vetorial (sf::st_intersection)",
-          startRow = linha_subtitulo, startCol = col_classe)
-addStyle(wb, ws, st_subtitulo, rows = linha_subtitulo, cols = col_classe:col_fim, gridExpand = TRUE)
-setRowHeights(wb, ws, linha_subtitulo, 16)
-
-# --- Cabeçalho: coluna Classe (linhas 3 e 4 mescladas) ----------------------
-mergeCells(wb, ws, rows = c(linha_cab_ad, linha_cab_sub), cols = col_classe)
-writeData(wb, ws, "Classe", startRow = linha_cab_ad, startCol = col_classe)
-addStyle(wb, ws, st_cab_classe,
-         rows = c(linha_cab_ad, linha_cab_sub), cols = col_classe, gridExpand = TRUE)
-
-# --- Cabeçalho: uma seção por AD ---------------------------------------------
-for (i in seq_along(nomes_ad)) {
+# --- Uma aba por AD ----------------------------------------------------------
+for (ad in nomes_ad) {
   
-  c_ini <- col_ad_ini(i)
-  c_fim_bloco <- col_ad_km2(i)
+  cat("  Gerando aba:", ad, "\n")
   
-  # Nome da AD (mesclado sobre as 3 sub-colunas)
-  mergeCells(wb, ws, rows = linha_cab_ad, cols = c_ini:c_fim_bloco)
-  writeData(wb, ws, nomes_ad[i], startRow = linha_cab_ad, startCol = c_ini)
-  addStyle(wb, ws, st_cab_ad,
-           rows = linha_cab_ad, cols = c_ini:c_fim_bloco, gridExpand = TRUE)
+  # Nome da aba truncado para 31 caracteres (limite do Excel)
+  nome_aba <- substr(ad, 1, 31)
+  addWorksheet(wb, nome_aba)
   
-  # Sub-cabeçalhos
-  writeData(wb, ws, "Área (m²)", startRow = linha_cab_sub, startCol = col_ad_m2(i))
-  writeData(wb, ws, "Área (ha)", startRow = linha_cab_sub, startCol = col_ad_ha(i))
-  writeData(wb, ws, "Área (km²)", startRow = linha_cab_sub, startCol = col_ad_km2(i))
-  addStyle(wb, ws, st_cab_sub,
-           rows = linha_cab_sub,
-           cols = c(col_ad_m2(i), col_ad_ha(i), col_ad_km2(i)),
-           gridExpand = TRUE)
-}
-
-setRowHeights(wb, ws, c(linha_cab_ad, linha_cab_sub), c(28, 20))
-
-# --- Dados por classe --------------------------------------------------------
-for (i in seq_along(classes_unicas)) {
+  df      <- runoff_por_ad[[ad]]$tabela
+  vp      <- runoff_por_ad[[ad]]$valor_ponderado
+  n_cls   <- nrow(df)
   
-  cls      <- classes_unicas[i]
-  linha_i  <- linha_dados_ini + i - 1
-  eh_par   <- (i %% 2 == 0)
+  linha_dados_fim <- linha_dados_ini + n_cls - 1
+  linha_total     <- linha_dados_fim + 1
+  linha_rodape    <- linha_total + 2
   
-  st_cls  <- if (eh_par) st_classe_par  else st_classe_impar
-  st_val  <- if (eh_par) st_dado_par    else st_dado_impar
-  st_m2   <- if (eh_par) st_dado_m2_par else st_dado_m2_impar
+  # Título
+  mergeCells(wb, nome_aba, rows = linha_titulo, cols = COL_CLASSE:N_COLS)
+  writeData(wb, nome_aba,
+            paste0("USO DO SOLO E ", metodo_runoff, " PONDERADO — ", ad),
+            startRow = linha_titulo, startCol = COL_CLASSE)
+  addStyle(wb, nome_aba, st_titulo,
+           rows = linha_titulo, cols = COL_CLASSE:N_COLS, gridExpand = TRUE)
+  setRowHeights(wb, nome_aba, linha_titulo, 22)
   
-  # Nome da classe
-  writeData(wb, ws, cls, startRow = linha_i, startCol = col_classe)
-  addStyle(wb, ws, st_cls, rows = linha_i, cols = col_classe)
+  # Subtítulo
+  mergeCells(wb, nome_aba, rows = linha_subtitulo, cols = COL_CLASSE:N_COLS)
+  writeData(wb, nome_aba,
+            paste0("Método: ", metodo_runoff,
+                   " | Área total da AD: ",
+                   format(round(sum(df$AD_m2), 2), big.mark = ".", decimal.mark = ","),
+                   " m²"),
+            startRow = linha_subtitulo, startCol = COL_CLASSE)
+  addStyle(wb, nome_aba, st_subtitulo,
+           rows = linha_subtitulo, cols = COL_CLASSE:N_COLS, gridExpand = TRUE)
+  setRowHeights(wb, nome_aba, linha_subtitulo, 16)
   
-  # Valores por AD
-  for (j in seq_along(nomes_ad)) {
-    sub <- dados_todos %>% filter(Classe == cls, AD == nomes_ad[j])
-    
-    v_m2  <- if (nrow(sub) == 0) 0 else sum(sub$AD_m2)
-    v_ha  <- if (nrow(sub) == 0) 0 else sum(sub$AD_ha)
-    v_km2 <- if (nrow(sub) == 0) 0 else sum(sub$AD_km2)
-    
-    writeData(wb, ws, v_m2,  startRow = linha_i, startCol = col_ad_m2(j))
-    writeData(wb, ws, v_ha,  startRow = linha_i, startCol = col_ad_ha(j))
-    writeData(wb, ws, v_km2, startRow = linha_i, startCol = col_ad_km2(j))
-    
-    addStyle(wb, ws, st_m2,  rows = linha_i, cols = col_ad_m2(j))
-    addStyle(wb, ws, st_val, rows = linha_i, cols = col_ad_ha(j))
-    addStyle(wb, ws, st_val, rows = linha_i, cols = col_ad_km2(j))
-  }
-  
-  setRowHeights(wb, ws, linha_i, 16)
-}
-
-# --- Linha de totais ----------------------------------------------------------
-writeData(wb, ws, "TOTAL", startRow = linha_total, startCol = col_classe)
-addStyle(wb, ws, st_total_label, rows = linha_total, cols = col_classe)
-
-for (j in seq_along(nomes_ad)) {
-  
-  r_ini <- linha_dados_ini
-  r_fim <- linha_dados_fim
-  
-  col_m2  <- col_ad_m2(j)
-  col_ha  <- col_ad_ha(j)
-  col_km2 <- col_ad_km2(j)
-  
-  cel_m2  <- paste0(int2col(col_m2),  r_ini, ":", int2col(col_m2),  r_fim)
-  cel_ha  <- paste0(int2col(col_ha),  r_ini, ":", int2col(col_ha),  r_fim)
-  cel_km2 <- paste0(int2col(col_km2), r_ini, ":", int2col(col_km2), r_fim)
-  
-  writeFormula(wb, ws, paste0("=SUM(", cel_m2,  ")"), startRow = linha_total, startCol = col_m2)
-  writeFormula(wb, ws, paste0("=SUM(", cel_ha,  ")"), startRow = linha_total, startCol = col_ha)
-  writeFormula(wb, ws, paste0("=SUM(", cel_km2, ")"), startRow = linha_total, startCol = col_km2)
-  
-  addStyle(wb, ws, st_total_m2,  rows = linha_total, cols = col_m2)
-  addStyle(wb, ws, st_total_val, rows = linha_total, cols = col_ha)
-  addStyle(wb, ws, st_total_val, rows = linha_total, cols = col_km2)
-}
-
-setRowHeights(wb, ws, linha_total, 20)
-
-# --- Largura das colunas ------------------------------------------------------
-setColWidths(wb, ws, cols = col_classe, widths = 30)
-for (j in seq_along(nomes_ad)) {
-  setColWidths(wb, ws, cols = col_ad_m2(j),  widths = 18)
-  setColWidths(wb, ws, cols = col_ad_ha(j),  widths = 13)
-  setColWidths(wb, ws, cols = col_ad_km2(j), widths = 13)
-}
-
-# --- Congelar painéis na linha de dados e coluna Classe ----------------------
-freezePane(wb, ws, firstActiveRow = linha_dados_ini, firstActiveCol = 2)
-
-# -----------------------------------------------------------------------------
-# 8. ABA DE VERIFICAÇÃO: Área Total da AD vs. Soma das Tipologias
-# -----------------------------------------------------------------------------
-cat("=== PASSO 8: Gerando aba de verificação ===\n")
-
-addWorksheet(wb, "Verificação")
-ws_ver <- "Verificação"
-
-# --- Estilos específicos da aba de verificação --------------------------------
-st_ver_titulo <- createStyle(
-  fontSize = 13, fontColour = "#FFFFFF", fontName = "Arial",
-  fgFill = "#1F4E79", halign = "center", valign = "center",
-  textDecoration = "bold"
-)
-st_ver_subtitulo <- createStyle(
-  fontSize = 9, fontColour = "#595959", fontName = "Arial",
-  halign = "left", valign = "center", textDecoration = "italic"
-)
-st_ver_cab <- createStyle(
-  fontSize = 10, fontColour = "#FFFFFF", fontName = "Arial",
-  fgFill = "#2E75B6", halign = "center", valign = "center",
-  textDecoration = "bold", wrapText = TRUE,
-  border = "TopBottomLeftRight", borderColour = "#FFFFFF"
-)
-st_ver_ad <- createStyle(
-  fontSize = 9, fontName = "Arial", halign = "left", valign = "center",
-  fgFill = "#DEEAF1", textDecoration = "bold",
-  border = "TopBottomLeftRight", borderColour = "#BDD7EE"
-)
-st_ver_ad_impar <- createStyle(
-  fontSize = 9, fontName = "Arial", halign = "left", valign = "center",
-  fgFill = "#FFFFFF", textDecoration = "bold",
-  border = "TopBottomLeftRight", borderColour = "#BDD7EE"
-)
-st_ver_num_par <- createStyle(
-  fontSize = 9, fontName = "Arial", halign = "right", valign = "center",
-  fgFill = "#DEEAF1",
-  border = "TopBottomLeftRight", borderColour = "#BDD7EE",
-  numFmt = "#,##0.00"
-)
-st_ver_num_impar <- createStyle(
-  fontSize = 9, fontName = "Arial", halign = "right", valign = "center",
-  fgFill = "#FFFFFF",
-  border = "TopBottomLeftRight", borderColour = "#BDD7EE",
-  numFmt = "#,##0.00"
-)
-st_ver_dif_ok_par <- createStyle(
-  fontSize = 9, fontName = "Arial", halign = "right", valign = "center",
-  fgFill = "#E2EFDA", fontColour = "#375623",  # verde claro
-  border = "TopBottomLeftRight", borderColour = "#BDD7EE",
-  numFmt = "#,##0.00"
-)
-st_ver_dif_ok_impar <- createStyle(
-  fontSize = 9, fontName = "Arial", halign = "right", valign = "center",
-  fgFill = "#F0F7EC", fontColour = "#375623",
-  border = "TopBottomLeftRight", borderColour = "#BDD7EE",
-  numFmt = "#,##0.00"
-)
-st_ver_nota <- createStyle(
-  fontSize = 9, fontColour = "#595959", fontName = "Arial",
-  halign = "left", valign = "center", textDecoration = "italic"
-)
-
-# --- Calcular área total de cada AD diretamente do shapefile -----------------
-areas_ad_totais <- data.frame(
-  AD      = character(),
-  Total_m2 = numeric(),
-  Total_ha = numeric(),
-  Total_km2 = numeric(),
-  stringsAsFactors = FALSE
-)
-
-for (caminho_ad in caminhos_ad) {
-  nome_ad <- tools::file_path_sans_ext(basename(caminho_ad))
-  ad_sf   <- st_read(caminho_ad, quiet = TRUE) %>% st_zm(drop = TRUE, what = "ZM")
-  
-  # Reprojetar para o CRS do uso do solo (garantia de unidade em metros)
-  if (st_crs(ad_sf) != st_crs(uso_solo)) {
-    ad_sf <- st_transform(ad_sf, st_crs(uso_solo))
-  }
-  
-  area_total_m2 <- as.numeric(sum(st_area(ad_sf)))
-  
-  areas_ad_totais <- rbind(areas_ad_totais, data.frame(
-    AD        = nome_ad,
-    Total_m2  = area_total_m2,
-    Total_ha  = area_total_m2 / 10000,
-    Total_km2 = area_total_m2 / 1e6,
-    stringsAsFactors = FALSE
-  ))
-}
-
-# --- Calcular soma das tipologias por AD -------------------------------------
-soma_tipologias <- dados_todos %>%
-  group_by(AD) %>%
-  summarise(
-    Soma_m2  = sum(AD_m2,  na.rm = TRUE),
-    Soma_ha  = sum(AD_ha,  na.rm = TRUE),
-    Soma_km2 = sum(AD_km2, na.rm = TRUE),
-    .groups = "drop"
-  ) %>%
-  mutate(AD = as.character(AD))
-
-# --- Unir e calcular diferença -----------------------------------------------
-tabela_ver <- areas_ad_totais %>%
-  left_join(soma_tipologias, by = "AD") %>%
-  mutate(
-    Dif_m2  = Soma_m2  - Total_m2,
-    Dif_ha  = Soma_ha  - Total_ha,
-    Dif_km2 = Soma_km2 - Total_km2
+  # Cabeçalhos
+  cabecalhos <- c(
+    "Classe de Uso do Solo",
+    "Área (m²)", "Área (ha)", "Área (km²)",
+    "% da AD",
+    metodo_runoff,
+    paste0(metodo_runoff, " × %")
   )
-
-# --- Escrever na aba ----------------------------------------------------------
-# Linhas: 1 = título, 2 = subtítulo, 3 = cabeçalho, 4+ = dados, última = nota
-
-lin_ver_titulo    <- 1
-lin_ver_subtitulo <- 2
-lin_ver_cab       <- 3
-lin_ver_dados_ini <- 4
-lin_ver_dados_fim <- lin_ver_dados_ini + nrow(tabela_ver) - 1
-lin_ver_nota      <- lin_ver_dados_fim + 2
-
-n_cols_ver <- 7  # AD | Total_m2 | Total_ha | Total_km2 | Soma_ha | Soma_km2 | Dif_km2
-
-# Título
-mergeCells(wb, ws_ver, rows = lin_ver_titulo, cols = 1:n_cols_ver)
-writeData(wb, ws_ver, "VERIFICAÇÃO: ÁREA TOTAL DA AD vs. SOMA DAS TIPOLOGIAS",
-          startRow = lin_ver_titulo, startCol = 1)
-addStyle(wb, ws_ver, st_ver_titulo,
-         rows = lin_ver_titulo, cols = 1:n_cols_ver, gridExpand = TRUE)
-setRowHeights(wb, ws_ver, lin_ver_titulo, 22)
-
-# Subtítulo
-mergeCells(wb, ws_ver, rows = lin_ver_subtitulo, cols = 1:n_cols_ver)
-writeData(wb, ws_ver,
-          "Diferenças próximas a zero são esperadas e resultam de efeitos de borda no clip vetorial.",
-          startRow = lin_ver_subtitulo, startCol = 1)
-addStyle(wb, ws_ver, st_ver_subtitulo,
-         rows = lin_ver_subtitulo, cols = 1:n_cols_ver, gridExpand = TRUE)
-setRowHeights(wb, ws_ver, lin_ver_subtitulo, 16)
-
-# Cabeçalho
-cabecalhos_ver <- c(
-  "Área de Drenagem",
-  "AD Total (m²)", "AD Total (ha)", "AD Total (km²)",
-  "Soma Tipologias (ha)", "Soma Tipologias (km²)",
-  "Diferença (km²)"
-)
-for (k in seq_along(cabecalhos_ver)) {
-  writeData(wb, ws_ver, cabecalhos_ver[k], startRow = lin_ver_cab, startCol = k)
-  addStyle(wb, ws_ver, st_ver_cab, rows = lin_ver_cab, cols = k)
+  for (k in seq_along(cabecalhos)) {
+    writeData(wb, nome_aba, cabecalhos[k], startRow = linha_cab, startCol = k)
+    st_cab_k <- if (k == COL_CLASSE) st_cab_classe else st_cab
+    addStyle(wb, nome_aba, st_cab_k, rows = linha_cab, cols = k)
+  }
+  setRowHeights(wb, nome_aba, linha_cab, 24)
+  
+  # Dados
+  for (i in seq_len(n_cls)) {
+    linha_i <- linha_dados_ini + i - 1
+    eh_par  <- (i %% 2 == 0)
+    
+    st_cls  <- if (eh_par) st_classe_par  else st_classe_impar
+    st_num  <- if (eh_par) st_num_par     else st_num_impar
+    st_pct  <- if (eh_par) st_pct_par     else st_pct_impar
+    st_ro   <- if (eh_par) st_runoff_par  else st_runoff_impar
+    
+    writeData(wb, nome_aba, df$Classe[i],       startRow = linha_i, startCol = COL_CLASSE)
+    writeData(wb, nome_aba, df$AD_m2[i],        startRow = linha_i, startCol = COL_M2)
+    writeData(wb, nome_aba, df$AD_ha[i],        startRow = linha_i, startCol = COL_HA)
+    writeData(wb, nome_aba, df$AD_km2[i],       startRow = linha_i, startCol = COL_KM2)
+    writeData(wb, nome_aba, df$Perc_area[i],    startRow = linha_i, startCol = COL_PCT)
+    writeData(wb, nome_aba, df$Valor_runoff[i], startRow = linha_i, startCol = COL_RUNOFF)
+    writeData(wb, nome_aba, df$Contribuicao[i], startRow = linha_i, startCol = COL_CONTRIB)
+    
+    addStyle(wb, nome_aba, st_cls, rows = linha_i, cols = COL_CLASSE)
+    addStyle(wb, nome_aba, st_num, rows = linha_i, cols = c(COL_M2, COL_HA, COL_KM2, COL_CONTRIB), gridExpand = TRUE)
+    addStyle(wb, nome_aba, st_pct, rows = linha_i, cols = COL_PCT)
+    addStyle(wb, nome_aba, st_ro,  rows = linha_i, cols = COL_RUNOFF)
+    
+    setRowHeights(wb, nome_aba, linha_i, 16)
+  }
+  
+  # Linha de totais
+  writeData(wb, nome_aba, "TOTAL / PONDERADO", startRow = linha_total, startCol = COL_CLASSE)
+  addStyle(wb, nome_aba, st_total_label, rows = linha_total, cols = COL_CLASSE)
+  
+  # Totais de área via fórmula
+  for (col in c(COL_M2, COL_HA, COL_KM2)) {
+    cel <- paste0(int2col(col), linha_dados_ini, ":", int2col(col), linha_dados_fim)
+    writeFormula(wb, nome_aba, paste0("=SUM(", cel, ")"), startRow = linha_total, startCol = col)
+    addStyle(wb, nome_aba, st_total_num, rows = linha_total, cols = col)
+  }
+  
+  # % total (deve ser 100%)
+  cel_pct <- paste0(int2col(COL_PCT), linha_dados_ini, ":", int2col(COL_PCT), linha_dados_fim)
+  writeFormula(wb, nome_aba, paste0("=SUM(", cel_pct, ")"), startRow = linha_total, startCol = COL_PCT)
+  addStyle(wb, nome_aba, st_total_pct, rows = linha_total, cols = COL_PCT)
+  
+  # CN/C ponderado final
+  cel_contrib <- paste0(int2col(COL_CONTRIB), linha_dados_ini, ":", int2col(COL_CONTRIB), linha_dados_fim)
+  writeFormula(wb, nome_aba, paste0("=SUM(", cel_contrib, ")"), startRow = linha_total, startCol = COL_RUNOFF)
+  addStyle(wb, nome_aba, st_total_runoff, rows = linha_total, cols = COL_RUNOFF)
+  
+  # Célula CN/C × % não se aplica ao total — deixar em branco com estilo
+  addStyle(wb, nome_aba, st_total_num, rows = linha_total, cols = COL_CONTRIB)
+  
+  setRowHeights(wb, nome_aba, linha_total, 20)
+  
+  # Rodapé
+  mergeCells(wb, nome_aba, rows = linha_rodape, cols = COL_CLASSE:N_COLS)
+  writeData(wb, nome_aba,
+            paste0(metodo_runoff, " ponderado calculado como: Σ(", metodo_runoff,
+                   "_i × A_i) / A_total, onde A_i é a área de cada tipologia e A_total é a soma das áreas clipadas."),
+            startRow = linha_rodape, startCol = COL_CLASSE)
+  addStyle(wb, nome_aba, st_rodape,
+           rows = linha_rodape, cols = COL_CLASSE:N_COLS, gridExpand = TRUE)
+  setRowHeights(wb, nome_aba, linha_rodape, 20)
+  
+  # Larguras de coluna
+  setColWidths(wb, nome_aba, cols = COL_CLASSE,  widths = 30)
+  setColWidths(wb, nome_aba, cols = COL_M2,      widths = 18)
+  setColWidths(wb, nome_aba, cols = COL_HA,      widths = 13)
+  setColWidths(wb, nome_aba, cols = COL_KM2,     widths = 13)
+  setColWidths(wb, nome_aba, cols = COL_PCT,     widths = 10)
+  setColWidths(wb, nome_aba, cols = COL_RUNOFF,  widths = 12)
+  setColWidths(wb, nome_aba, cols = COL_CONTRIB, widths = 16)
+  
+  # Congelar painel
+  freezePane(wb, nome_aba, firstActiveRow = linha_dados_ini, firstActiveCol = 2)
 }
-setRowHeights(wb, ws_ver, lin_ver_cab, 28)
 
-# Dados
-for (i in seq_len(nrow(tabela_ver))) {
-  linha_i <- lin_ver_dados_ini + i - 1
-  eh_par  <- (i %% 2 == 0)
-  
-  st_ad  <- if (eh_par) st_ver_ad       else st_ver_ad_impar
-  st_num <- if (eh_par) st_ver_num_par  else st_ver_num_impar
-  st_dif <- if (eh_par) st_ver_dif_ok_par else st_ver_dif_ok_impar
-  
-  writeData(wb, ws_ver, tabela_ver$AD[i],        startRow = linha_i, startCol = 1)
-  writeData(wb, ws_ver, tabela_ver$Total_m2[i],  startRow = linha_i, startCol = 2)
-  writeData(wb, ws_ver, tabela_ver$Total_ha[i],  startRow = linha_i, startCol = 3)
-  writeData(wb, ws_ver, tabela_ver$Total_km2[i], startRow = linha_i, startCol = 4)
-  writeData(wb, ws_ver, tabela_ver$Soma_ha[i],   startRow = linha_i, startCol = 5)
-  writeData(wb, ws_ver, tabela_ver$Soma_km2[i],  startRow = linha_i, startCol = 6)
-  writeData(wb, ws_ver, tabela_ver$Dif_km2[i],   startRow = linha_i, startCol = 7)
-  
-  addStyle(wb, ws_ver, st_ad,  rows = linha_i, cols = 1)
-  addStyle(wb, ws_ver, st_num, rows = linha_i, cols = 2:6, gridExpand = TRUE)
-  addStyle(wb, ws_ver, st_dif, rows = linha_i, cols = 7)
-  
-  setRowHeights(wb, ws_ver, linha_i, 16)
-}
-
-# Nota de rodapé
-mergeCells(wb, ws_ver, rows = lin_ver_nota, cols = 1:n_cols_ver)
-writeData(wb, ws_ver,
-          "Nota: A diferença pode ser não nula devido a polígonos de uso do solo que não cobrem integralmente a AD, sliver polygons ou imprecisões topológicas entre camadas.",
-          startRow = lin_ver_nota, startCol = 1)
-addStyle(wb, ws_ver, st_ver_nota,
-         rows = lin_ver_nota, cols = 1:n_cols_ver, gridExpand = TRUE)
-setRowHeights(wb, ws_ver, lin_ver_nota, 20)
-
-# Larguras de coluna
-setColWidths(wb, ws_ver, cols = 1, widths = 35)
-setColWidths(wb, ws_ver, cols = 2:7, widths = 20)
-
-cat("Aba de verificação gerada.\n\n")
-
-# --- Salvar ------------------------------------------------------------------
-caminho_xlsx <- file.path(pasta_saida, "tabela_uso_solo_por_AD.xlsx")
+# --- Salvar com timestamp ----------------------------------------------------
+timestamp     <- format(Sys.time(), "%Y%m%d_%H%M%S")
+nome_arquivo  <- paste0("tabela_uso_solo_por_AD_", timestamp, ".xlsx")
+caminho_xlsx  <- file.path(pasta_saida, nome_arquivo)
 saveWorkbook(wb, caminho_xlsx, overwrite = TRUE)
 
 cat("Excel salvo em:\n ", caminho_xlsx, "\n")
