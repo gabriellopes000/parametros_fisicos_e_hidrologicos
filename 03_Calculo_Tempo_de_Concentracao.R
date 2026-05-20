@@ -78,7 +78,9 @@ calc_decliv <- function(linha_sf, mdt) {
     decliv_max      = max(slope_vec, na.rm = TRUE),
     cota_inicial    = cotas[1],
     cota_final      = cotas[n],
-    delta_H         = abs(cotas[n] - cotas[1])
+    delta_H         = abs(cotas[n] - cotas[1]),
+    cotas           = cotas,          # <-- novo
+    dist_acum       = c(0, cumsum(L2D_vec))  # <-- novo
   )
 }
 
@@ -156,6 +158,63 @@ todos$decliv_media_m_m <- round(todos$decliv_media / 100, 6)
 
 todos$tc_kirpich_min <- round(
   0.0195 * (todos$comprimento_2D ^ 0.77) / (todos$decliv_media_m_m ^ 0.385),
+  2
+)
+
+# ── 7b. DECLIVIDADE EQUIVALENTE (IGUAL ÁREA) ─────────────────────────────────
+
+# Recalcula a partir dos vetores armazenados por feição
+decliv_eq_vec <- numeric(nrow(todos))
+
+idx_global <- 0
+for (nome_arq in names(resultados_todos)) {
+  
+  camada <- st_read(shp_paths[match(nome_arq, tools::file_path_sans_ext(basename(shp_paths)))],
+                    quiet = TRUE)
+  camada <- camada[st_geometry_type(camada) %in% c("LINESTRING", "MULTILINESTRING"), ]
+  camada <- st_cast(camada, "LINESTRING")
+  
+  for (j in seq_len(nrow(camada))) {
+    
+    idx_global <- idx_global + 1
+    feicao <- camada[j, ]
+    
+    res <- tryCatch(
+      calc_decliv(feicao, mdt),
+      error = function(e) NULL
+    )
+    
+    if (is.null(res)) {
+      decliv_eq_vec[idx_global] <- NA
+      next
+    }
+    
+    z <- res$cotas
+    x <- res$dist_acum
+    L <- x[length(x)]
+    
+    # Área sob o perfil pela regra do trapézio
+    area_perfil <- sum((z[-length(z)] + z[-1]) / 2 * diff(x), na.rm = TRUE)
+    
+    # Cota média do perfil
+    z_media <- area_perfil / L
+    
+    # A reta de igual área passa por z[1] em x=0 e tem z_media em x=L/2
+    # z_reta(x) = z[1] + S * x
+    # z_media = z[1] + S * (L/2)  =>  S = (z_media - z[1]) / (L/2)
+    S_m_m <- (z_media - z[1]) / (L / 2)
+    
+    decliv_eq_vec[idx_global] <- abs(S_m_m)
+  }
+}
+
+todos$decliv_equiv_m_m  <- round(decliv_eq_vec, 6)
+todos$decliv_equiv_pct  <- round(decliv_eq_vec * 100, 2)
+
+# ── 7c. TEMPO DE CONCENTRAÇÃO – KIRPICH (declividade equivalente) ─────────────
+
+todos$tc_kirpich_equiv_min <- round(
+  0.0195 * (todos$comprimento_2D ^ 0.77) / (todos$decliv_equiv_m_m ^ 0.385),
   2
 )
 
