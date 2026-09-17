@@ -390,6 +390,105 @@ linha_subtitulo <- 2
 linha_cab       <- 3
 linha_dados_ini <- 4
 
+# -----------------------------------------------------------------------------
+# ABA RESUMO — DISPOSITIVO x ÁREA x COEFICIENTE DE ESCOAMENTO
+# -----------------------------------------------------------------------------
+cat("  Gerando aba de resumo por dispositivo...\n")
+
+resumo_dispositivos <- data.frame(
+  Dispositivo = nomes_ad,
+  AD_m2       = sapply(nomes_ad, function(ad) sum(runoff_por_ad[[ad]]$tabela$AD_m2)),
+  AD_ha       = sapply(nomes_ad, function(ad) sum(runoff_por_ad[[ad]]$tabela$AD_ha)),
+  AD_km2      = sapply(nomes_ad, function(ad) sum(runoff_por_ad[[ad]]$tabela$AD_km2)),
+  Coeficiente = sapply(nomes_ad, function(ad) runoff_por_ad[[ad]]$valor_ponderado),
+  stringsAsFactors = FALSE
+)
+
+nome_aba_resumo <- "Resumo_Dispositivos"
+addWorksheet(wb, nome_aba_resumo)
+
+RCOL_NOME <- 1
+RCOL_M2   <- 2
+RCOL_HA   <- 3
+RCOL_KM2  <- 4
+RCOL_COEF <- 5
+RN_COLS   <- 5
+
+rlinha_dados_fim <- linha_dados_ini + nrow(resumo_dispositivos) - 1
+rlinha_total     <- rlinha_dados_fim + 1
+
+# Título
+mergeCells(wb, nome_aba_resumo, rows = linha_titulo, cols = RCOL_NOME:RN_COLS)
+writeData(wb, nome_aba_resumo,
+          paste0("RESUMO POR DISPOSITIVO — ÁREA E ", metodo_runoff, " PONDERADO"),
+          startRow = linha_titulo, startCol = RCOL_NOME)
+addStyle(wb, nome_aba_resumo, st_titulo,
+         rows = linha_titulo, cols = RCOL_NOME:RN_COLS, gridExpand = TRUE)
+setRowHeights(wb, nome_aba_resumo, linha_titulo, 22)
+
+# Subtítulo
+mergeCells(wb, nome_aba_resumo, rows = linha_subtitulo, cols = RCOL_NOME:RN_COLS)
+writeData(wb, nome_aba_resumo,
+          paste0("Método: ", metodo_runoff, " | Dispositivos: ", nrow(resumo_dispositivos)),
+          startRow = linha_subtitulo, startCol = RCOL_NOME)
+addStyle(wb, nome_aba_resumo, st_subtitulo,
+         rows = linha_subtitulo, cols = RCOL_NOME:RN_COLS, gridExpand = TRUE)
+setRowHeights(wb, nome_aba_resumo, linha_subtitulo, 16)
+
+# Cabeçalhos
+cabecalhos_resumo <- c("Dispositivo", "Área (m²)", "Área (ha)", "Área (km²)", metodo_runoff)
+for (k in seq_along(cabecalhos_resumo)) {
+  writeData(wb, nome_aba_resumo, cabecalhos_resumo[k], startRow = linha_cab, startCol = k)
+  st_cab_k <- if (k == RCOL_NOME) st_cab_classe else st_cab
+  addStyle(wb, nome_aba_resumo, st_cab_k, rows = linha_cab, cols = k)
+}
+setRowHeights(wb, nome_aba_resumo, linha_cab, 24)
+
+# Dados
+for (i in seq_len(nrow(resumo_dispositivos))) {
+  linha_i <- linha_dados_ini + i - 1
+  eh_par  <- (i %% 2 == 0)
+  
+  st_cls <- if (eh_par) st_classe_par else st_classe_impar
+  st_num <- if (eh_par) st_num_par    else st_num_impar
+  st_ro  <- if (eh_par) st_runoff_par else st_runoff_impar
+  
+  writeData(wb, nome_aba_resumo, resumo_dispositivos$Dispositivo[i], startRow = linha_i, startCol = RCOL_NOME)
+  writeData(wb, nome_aba_resumo, resumo_dispositivos$AD_m2[i],       startRow = linha_i, startCol = RCOL_M2)
+  writeData(wb, nome_aba_resumo, resumo_dispositivos$AD_ha[i],       startRow = linha_i, startCol = RCOL_HA)
+  writeData(wb, nome_aba_resumo, resumo_dispositivos$AD_km2[i],      startRow = linha_i, startCol = RCOL_KM2)
+  writeData(wb, nome_aba_resumo, resumo_dispositivos$Coeficiente[i], startRow = linha_i, startCol = RCOL_COEF)
+  
+  addStyle(wb, nome_aba_resumo, st_cls, rows = linha_i, cols = RCOL_NOME)
+  addStyle(wb, nome_aba_resumo, st_num, rows = linha_i, cols = c(RCOL_M2, RCOL_HA, RCOL_KM2), gridExpand = TRUE)
+  addStyle(wb, nome_aba_resumo, st_ro,  rows = linha_i, cols = RCOL_COEF)
+  
+  setRowHeights(wb, nome_aba_resumo, linha_i, 16)
+}
+
+# Linha de totais (áreas somadas; coeficiente não é somado, apenas destacado)
+writeData(wb, nome_aba_resumo, "TOTAL", startRow = rlinha_total, startCol = RCOL_NOME)
+addStyle(wb, nome_aba_resumo, st_total_label, rows = rlinha_total, cols = RCOL_NOME)
+
+for (col in c(RCOL_M2, RCOL_HA, RCOL_KM2)) {
+  cel <- paste0(int2col(col), linha_dados_ini, ":", int2col(col), rlinha_dados_fim)
+  writeFormula(wb, nome_aba_resumo, paste0("=SUM(", cel, ")"), startRow = rlinha_total, startCol = col)
+  addStyle(wb, nome_aba_resumo, st_total_num, rows = rlinha_total, cols = col)
+}
+addStyle(wb, nome_aba_resumo, st_total_num, rows = rlinha_total, cols = RCOL_COEF)
+setRowHeights(wb, nome_aba_resumo, rlinha_total, 20)
+
+# Larguras de coluna
+setColWidths(wb, nome_aba_resumo, cols = RCOL_NOME, widths = 30)
+setColWidths(wb, nome_aba_resumo, cols = RCOL_M2,   widths = 18)
+setColWidths(wb, nome_aba_resumo, cols = RCOL_HA,   widths = 13)
+setColWidths(wb, nome_aba_resumo, cols = RCOL_KM2,  widths = 13)
+setColWidths(wb, nome_aba_resumo, cols = RCOL_COEF, widths = 12)
+
+freezePane(wb, nome_aba_resumo, firstActiveRow = linha_dados_ini, firstActiveCol = 2)
+
+cat("  Aba de resumo gerada com", nrow(resumo_dispositivos), "dispositivo(s)\n\n")
+
 # --- Uma aba por AD ----------------------------------------------------------
 for (ad in nomes_ad) {
   
