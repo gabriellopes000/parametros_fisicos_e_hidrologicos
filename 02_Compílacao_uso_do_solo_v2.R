@@ -448,20 +448,18 @@ setRowHeights(wb, nome_aba_resumo, linha_cab, 24)
 for (i in seq_len(nrow(resumo_dispositivos))) {
   linha_i <- linha_dados_ini + i - 1
   eh_par  <- (i %% 2 == 0)
-
-  st_cls <- if (eh_par) st_classe_par else st_classe_impar
-  st_num <- if (eh_par) st_num_par    else st_num_impar
-  st_ro  <- if (eh_par) st_runoff_par else st_runoff_impar
+st_cls <- if (eh_par) st_classe_par else st_classe_impar
+st_num <- if (eh_par) st_num_par    else st_num_impar
+st_ro  <- if (eh_par) st_runoff_par else st_runoff_impar
 
   writeData(wb, nome_aba_resumo, resumo_dispositivos$Dispositivo[i], startRow = linha_i, startCol = RCOL_NOME)
   writeData(wb, nome_aba_resumo, resumo_dispositivos$AD_m2[i],       startRow = linha_i, startCol = RCOL_M2)
   writeData(wb, nome_aba_resumo, resumo_dispositivos$AD_ha[i],       startRow = linha_i, startCol = RCOL_HA)
   writeData(wb, nome_aba_resumo, resumo_dispositivos$AD_km2[i],      startRow = linha_i, startCol = RCOL_KM2)
   writeData(wb, nome_aba_resumo, resumo_dispositivos$Coeficiente[i], startRow = linha_i, startCol = RCOL_COEF)
-
-  addStyle(wb, nome_aba_resumo, st_cls, rows = linha_i, cols = RCOL_NOME)
-  addStyle(wb, nome_aba_resumo, st_num, rows = linha_i, cols = c(RCOL_M2, RCOL_HA, RCOL_KM2), gridExpand = TRUE)
-  addStyle(wb, nome_aba_resumo, st_ro,  rows = linha_i, cols = RCOL_COEF)
+addStyle(wb, nome_aba_resumo, st_cls, rows = linha_i, cols = RCOL_NOME)
+addStyle(wb, nome_aba_resumo, st_num, rows = linha_i, cols = c(RCOL_M2, RCOL_HA, RCOL_KM2), gridExpand = TRUE)
+addStyle(wb, nome_aba_resumo, st_ro,  rows = linha_i, cols = RCOL_COEF)
 
   setRowHeights(wb, nome_aba_resumo, linha_i, 16)
 }
